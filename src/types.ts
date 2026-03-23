@@ -48,10 +48,45 @@ export interface NewMessage {
   sender: string;
   sender_name: string;
   content: string;
+  content_parts?: ContentPart[];
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
 }
+
+/**
+ *  Media parts accept either:
+ *    ref    — URL or file ID; processContentParts() downloads it (Telegram, Discord, etc.)
+ *    buffer — pre-downloaded bytes for encrypted protocols (WhatsApp via Baileys)
+ */
+
+export type RawContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; ref?: string; buffer?: Buffer; mimetype?: string }
+  | { type: 'voice'; ref?: string; buffer?: Buffer; mimetype?: string }
+  | { type: 'video'; ref?: string; buffer?: Buffer; mimetype?: string }
+  | { type: 'audio'; ref?: string; buffer?: Buffer; mimetype?: string }
+  | {
+      type: 'file';
+      ref?: string;
+      buffer?: Buffer;
+      filename: string;
+      mimetype?: string;
+    }
+  | { type: 'sticker'; ref?: string; buffer?: Buffer; mimetype?: string }
+  | { type: 'contact'; data: Record<string, unknown> }
+  | { type: 'location'; lat: number; lng: number; name?: string };
+
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; path: string }
+  | { type: 'voice'; path: string }
+  | { type: 'video'; path: string }
+  | { type: 'audio'; path: string }
+  | { type: 'file'; path: string; filename: string }
+  | { type: 'sticker'; path: string }
+  | { type: 'contact'; text: string }
+  | { type: 'location'; text: string };
 
 export interface ScheduledTask {
   id: string;
