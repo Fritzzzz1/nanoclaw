@@ -24,6 +24,13 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
+interface ContentPart {
+  type: string;
+  path?: string;
+  text?: string;
+  filename?: string;
+}
+
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -33,6 +40,55 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+}
+
+type ContentBlock = any;
+type ContentHandler = (filePath: string) => Promise<ContentBlock[] | null>;
+
+interface HandlerEntry {
+  handler: ContentHandler;
+  priority: number;
+}
+
+const handlerRegistry = new Map<string, HandlerEntry[]>();
+
+function registerContentHandler(
+  type: string,
+  handler: ContentHandler,
+  priority = 100,
+): void {
+  const entries = handlerRegistry.get(type) || [];
+  entries.push({ handler, priority });
+  entries.sort((a, b) => a.priority - b.priority);
+  handlerRegistry.set(type, entries);
+  log(`Content handler registered for type="${type}" priority=${priority}`);
+}
+
+async function discoverHandlers(): Promise<void> {
+  const handlersDir = '/workspace/handlers';
+  if (!fs.existsSync(handlersDir)) return;
+
+  const files = fs.readdirSync(handlersDir).filter((f) => f.endsWith('.js'));
+  for (const file of files) {
+    try {
+      const mod = await import(path.join(handlersDir, file));
+      const def = mod.default || mod;
+      const entries = Array.isArray(def) ? def : [def];
+      for (const entry of entries) {
+        if (entry.type && typeof entry.handler === 'function') {
+          registerContentHandler(
+            entry.type,
+            entry.handler,
+            entry.priority ?? 100,
+          );
+        }
+      }
+    } catch (err) {
+      log(
+        `Failed to load handler ${file}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 }
 
 interface ContainerOutput {
@@ -53,9 +109,11 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+type MessageContent = string | any[];
+
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string };
+  message: { role: 'user'; content: MessageContent };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -73,10 +131,10 @@ class MessageStream {
   private waiting: (() => void) | null = null;
   private done = false;
 
-  push(text: string): void {
+  push(content: MessageContent): void {
     this.queue.push({
       type: 'user',
-      message: { role: 'user', content: text },
+      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -125,6 +183,137 @@ function writeOutput(output: ContainerOutput): void {
 
 function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
+}
+
+const NATIVE_IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+const NATIVE_DOC_EXTS = ['.pdf'];
+
+function getMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  const map: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.pdf': 'application/pdf',
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
+function defaultImageHandler(filePath: string): ContentBlock[] | null {
+  const ext = path.extname(filePath).toLowerCase();
+  if (!NATIVE_IMAGE_EXTS.includes(ext)) return null;
+  if (!fs.existsSync(filePath)) return null;
+  const data = fs.readFileSync(filePath).toString('base64');
+  log(`Embedded image: ${filePath}`);
+  return [
+    {
+      type: 'image',
+      source: { type: 'base64', media_type: getMimeType(filePath), data },
+    },
+  ];
+}
+
+function defaultDocHandler(filePath: string): ContentBlock[] | null {
+  const ext = path.extname(filePath).toLowerCase();
+  if (!NATIVE_DOC_EXTS.includes(ext)) return null;
+  if (!fs.existsSync(filePath)) return null;
+  const data = fs.readFileSync(filePath).toString('base64');
+  log(`Embedded document: ${filePath}`);
+  return [
+    {
+      type: 'document',
+      source: { type: 'base64', media_type: 'application/pdf', data },
+    },
+  ];
+}
+
+function defaultNonNativeHandler(
+  filePath: string,
+  part: ContentPart,
+): ContentBlock[] {
+  const label = part.type.charAt(0).toUpperCase() + part.type.slice(1);
+  log(`Non-native media (${part.type}): ${filePath}`);
+  return [
+    { type: 'text', text: `User sent ${label} file. Stored at ${filePath}.` },
+  ];
+}
+
+async function dispatchContentPart(part: ContentPart): Promise<ContentBlock[]> {
+  if (!part.path) return [];
+  const fullPath = `/workspace/group/${part.path}`;
+
+  const entries = handlerRegistry.get(part.type);
+  if (entries) {
+    for (const { handler } of entries) {
+      try {
+        const result = await handler(fullPath);
+        if (result && result.length > 0) return result;
+      } catch (err) {
+        log(
+          `Handler for ${part.type} failed, trying next: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  if (part.type === 'image') {
+    const result = defaultImageHandler(fullPath);
+    if (result) return result;
+  }
+  if (part.type === 'file') {
+    const result = defaultDocHandler(fullPath);
+    if (result) return result;
+  }
+
+  if (fs.existsSync(fullPath)) {
+    return defaultNonNativeHandler(fullPath, part);
+  }
+
+  log(`Media file not found: ${fullPath}`);
+  return [];
+}
+
+async function processMediaTags(text: string): Promise<MessageContent> {
+  const mediaRegex =
+    /<media\s+type="([^"]+)"\s+path="([^"]+)"(?:\s+filename="([^"]+)")?\s*\/>/g;
+  const matches = [...text.matchAll(mediaRegex)];
+
+  if (matches.length === 0) return text;
+
+  const blocks: ContentBlock[] = [];
+  let lastIndex = 0;
+
+  for (const match of matches) {
+    const [fullMatch, type, filePath, filename] = match;
+    const offset = match.index!;
+
+    if (offset > lastIndex) {
+      const before = text.slice(lastIndex, offset).trim();
+      if (before) blocks.push({ type: 'text', text: before });
+    }
+
+    const part: ContentPart = {
+      type,
+      path: filePath.replace('/workspace/group/', ''),
+    };
+    if (filename) part.filename = filename;
+
+    const dispatched = await dispatchContentPart(part);
+    blocks.push(...dispatched);
+
+    lastIndex = offset + fullMatch.length;
+  }
+
+  if (lastIndex < text.length) {
+    const after = text.slice(lastIndex).trim();
+    if (after) blocks.push({ type: 'text', text: after });
+  }
+
+  return blocks.length === 1 && blocks[0].type === 'text'
+    ? blocks[0].text
+    : blocks;
 }
 
 function getSessionSummary(
@@ -372,7 +561,7 @@ function waitForIpcMessage(): Promise<string | null> {
  * Also pipes IPC messages into the stream during the query.
  */
 async function runQuery(
-  prompt: string,
+  prompt: MessageContent,
   sessionId: string | undefined,
   mcpServerPath: string,
   containerInput: ContainerInput,
@@ -401,7 +590,7 @@ async function runQuery(
     const messages = drainIpcInput();
     for (const text of messages) {
       log(`Piping IPC message into active query (${text.length} chars)`);
-      stream.push(text);
+      processMediaTags(text).then((content) => stream.push(content));
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
@@ -639,15 +828,21 @@ async function main(): Promise<void> {
   }
 
   // Build initial prompt (drain any pending IPC messages too)
-  let prompt = containerInput.prompt;
+  let promptText = containerInput.prompt;
   if (containerInput.isScheduledTask) {
-    prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
+    promptText = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${promptText}`;
   }
   const pending = drainIpcInput();
   if (pending.length > 0) {
     log(`Draining ${pending.length} pending IPC messages into initial prompt`);
-    prompt += '\n' + pending.join('\n');
+    promptText += '\n' + pending.join('\n');
   }
+
+  // Discover skill-provided handler modules before dispatching
+  await discoverHandlers();
+
+  // Handler dispatch: process <media> tags in prompt through registered + default handlers
+  let prompt: MessageContent = await processMediaTags(promptText);
 
   // Script phase: run script before waking agent
   if (containerInput.script && containerInput.isScheduledTask) {
@@ -715,7 +910,7 @@ async function main(): Promise<void> {
       }
 
       log(`Got new message (${nextMessage.length} chars), starting new query`);
-      prompt = nextMessage;
+      prompt = await processMediaTags(nextMessage);
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
