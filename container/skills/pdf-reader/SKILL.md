@@ -4,9 +4,6 @@ description: Add PDF reading to NanoClaw agents. Extracts text from PDFs via pdf
 ---
 
 # Add PDF Reader
-
-> **Credits:** Based on the upstream `skill-add-pdf-reader` branch by the NanoClaw community. PDF extraction approach informed by contributions from [@vsabavat](https://github.com/vsabavat) (#917, #1055) and [@JasonOA888](https://github.com/JasonOA888) (#902).
-
 Adds PDF reading to container agents via poppler-utils (`pdftotext`/`pdfinfo`). Two capabilities:
 
 - **Auto-extraction handler** (`container/handlers/pdf-extract.js`) — intercepts incoming PDF attachments via the media handler system. When a PDF is sent in any channel, the handler runs `pdftotext` and delivers extracted text to Claude instead of the raw file. Falls through to Claude's native PDF embedding if extraction fails.
