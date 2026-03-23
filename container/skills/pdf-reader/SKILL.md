@@ -98,14 +98,3 @@ Ask the agent to read a PDF from a URL:
 > Use pdf-reader to fetch and read this PDF: [URL]
 
 The agent should use `pdf-reader fetch <url>`.
-
-## Troubleshooting
-
-**Agent says pdf-reader command not found**
-Container needs rebuilding. Run `./container/build.sh` and restart.
-
-**PDF text extraction is empty**
-The PDF may be scanned (image-based). `pdftotext` only handles text-based PDFs. The agent can use `agent-browser` to view it visually instead.
-
-**Auto-extraction not working but CLI works**
-Check that `container/handlers/pdf-extract.js` exists (not `.disabled`). Handler files are synced to the container at spawn time.
