@@ -28,6 +28,7 @@ import {
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
+import { readEnvFile } from './env.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -248,6 +249,11 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  const envSecrets = readEnvFile(['OPENAI_API_KEY']);
+  if (envSecrets.OPENAI_API_KEY) {
+    args.push('-e', `OPENAI_API_KEY=${envSecrets.OPENAI_API_KEY}`);
   }
 
   // Runtime-specific args for host gateway resolution
