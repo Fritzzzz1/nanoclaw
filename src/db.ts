@@ -7,6 +7,7 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   NewMessage,
+  Reaction,
   RegisteredGroup,
   ScheduledTask,
   TaskRunLog,
