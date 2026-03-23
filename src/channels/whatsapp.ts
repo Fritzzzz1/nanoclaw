@@ -6,6 +6,7 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   WASocket,
+  downloadContentFromMessage,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
@@ -18,12 +19,31 @@ import {
 } from '../config.js';
 import { getLastGroupSync, getLatestMessage, setLastGroupSync, storeReaction, updateChatName } from '../db.js';
 import { logger } from '../logger.js';
+import { contentPartsToText, processContentParts } from '../media.js';
 import {
   Channel,
+  ContentPart,
   OnInboundMessage,
   OnChatMetadata,
+  RawContentPart,
   RegisteredGroup,
 } from '../types.js';
+
+type MediaType = 'image' | 'video' | 'audio' | 'document' | 'sticker';
+
+async function downloadMedia(
+  message: Parameters<typeof downloadContentFromMessage>[0],
+  type: MediaType,
+): Promise<Buffer> {
+  const stream = await downloadContentFromMessage(message, type);
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(
+      typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer),
+    );
+  }
+  return Buffer.concat(chunks);
+}
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -194,40 +214,151 @@ export class WhatsAppChannel implements Channel {
 
         // Only deliver full message for registered groups
         const groups = this.opts.registeredGroups();
-        if (groups[chatJid]) {
-          const content =
-            msg.message?.conversation ||
-            msg.message?.extendedTextMessage?.text ||
-            msg.message?.imageMessage?.caption ||
-            msg.message?.videoMessage?.caption ||
-            '';
+        if (!groups[chatJid]) continue;
 
-          // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
-          if (!content) continue;
+        const m = msg.message;
+        const sender = msg.key.participant || msg.key.remoteJid || '';
+        const senderName = msg.pushName || sender.split('@')[0];
+        const fromMe = msg.key.fromMe || false;
 
-          const sender = msg.key.participant || msg.key.remoteJid || '';
-          const senderName = msg.pushName || sender.split('@')[0];
+        const rawParts: RawContentPart[] = [];
+        let hasMedia = false;
+        let textFallback = '';
 
-          const fromMe = msg.key.fromMe || false;
-          // Detect bot messages: with own number, fromMe is reliable
-          // since only the bot sends from that number.
-          // With shared number, bot messages carry the assistant name prefix
-          // (even in DMs/self-chat) so we check for that.
-          const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
-            ? fromMe
-            : content.startsWith(`${ASSISTANT_NAME}:`);
-
-          this.opts.onMessage(chatJid, {
-            id: msg.key.id || '',
-            chat_jid: chatJid,
-            sender,
-            sender_name: senderName,
-            content,
-            timestamp,
-            is_from_me: fromMe,
-            is_bot_message: isBotMessage,
+        if (m.conversation) {
+          textFallback = m.conversation;
+          rawParts.push({ type: 'text', text: m.conversation });
+        } else if (m.extendedTextMessage?.text) {
+          textFallback = m.extendedTextMessage.text;
+          rawParts.push({ type: 'text', text: m.extendedTextMessage.text });
+        } else if (m.imageMessage) {
+          hasMedia = true;
+          if (m.imageMessage.caption) {
+            textFallback = m.imageMessage.caption;
+            rawParts.push({ type: 'text', text: m.imageMessage.caption });
+          }
+          try {
+            const buffer = await downloadMedia(m.imageMessage, 'image');
+            rawParts.push({
+              type: 'image',
+              buffer,
+              mimetype: m.imageMessage.mimetype || undefined,
+            });
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to download image');
+          }
+        } else if (m.videoMessage) {
+          hasMedia = true;
+          if (m.videoMessage.caption) {
+            textFallback = m.videoMessage.caption;
+            rawParts.push({ type: 'text', text: m.videoMessage.caption });
+          }
+          try {
+            const buffer = await downloadMedia(m.videoMessage, 'video');
+            rawParts.push({
+              type: 'video',
+              buffer,
+              mimetype: m.videoMessage.mimetype || undefined,
+            });
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to download video');
+          }
+        } else if (m.audioMessage) {
+          hasMedia = true;
+          try {
+            const buffer = await downloadMedia(m.audioMessage, 'audio');
+            const partType = m.audioMessage.ptt ? 'voice' : 'audio';
+            rawParts.push({
+              type: partType,
+              buffer,
+              mimetype: m.audioMessage.mimetype || undefined,
+            } as RawContentPart);
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to download audio');
+          }
+        } else if (m.documentMessage) {
+          hasMedia = true;
+          if (m.documentMessage.caption) {
+            textFallback = m.documentMessage.caption;
+            rawParts.push({ type: 'text', text: m.documentMessage.caption });
+          }
+          try {
+            const buffer = await downloadMedia(m.documentMessage, 'document');
+            rawParts.push({
+              type: 'file',
+              buffer,
+              filename: m.documentMessage.fileName || 'document',
+              mimetype: m.documentMessage.mimetype || undefined,
+            });
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to download document');
+          }
+        } else if (m.stickerMessage) {
+          hasMedia = true;
+          try {
+            const buffer = await downloadMedia(m.stickerMessage, 'sticker');
+            rawParts.push({
+              type: 'sticker',
+              buffer,
+              mimetype: m.stickerMessage.mimetype || undefined,
+            });
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to download sticker');
+          }
+        } else if (m.contactMessage) {
+          hasMedia = true;
+          rawParts.push({
+            type: 'contact',
+            data: {
+              displayName: m.contactMessage.displayName || '',
+              vcard: m.contactMessage.vcard || '',
+            },
+          });
+        } else if (m.locationMessage) {
+          hasMedia = true;
+          rawParts.push({
+            type: 'location',
+            lat: m.locationMessage.degreesLatitude || 0,
+            lng: m.locationMessage.degreesLongitude || 0,
+            name: m.locationMessage.name || undefined,
           });
         }
+
+        if (rawParts.length === 0) continue;
+
+        let contentParts: ContentPart[] | undefined;
+        if (hasMedia) {
+          try {
+            contentParts = await processContentParts(
+              rawParts,
+              groups[chatJid].folder,
+              msg.key.id || '',
+            );
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to process content parts');
+          }
+        }
+
+        const content =
+          textFallback ||
+          (contentParts ? contentPartsToText(contentParts) : '');
+        if (!content) continue;
+
+        const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
+          ? fromMe
+          : content.startsWith(`${ASSISTANT_NAME}:`);
+
+        this.opts.onMessage(chatJid, {
+          id: msg.key.id || '',
+          chat_jid: chatJid,
+          sender,
+          sender_name: senderName,
+          content,
+          content_parts: contentParts,
+          timestamp,
+          is_from_me: fromMe,
+          is_bot_message: isBotMessage,
+        });
       }
     });
 
