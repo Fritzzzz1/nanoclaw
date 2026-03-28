@@ -6,9 +6,9 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   WASocket,
+  downloadContentFromMessage,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
-  normalizeMessageContent,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 
@@ -17,15 +17,39 @@ import {
   ASSISTANT_NAME,
   STORE_DIR,
 } from '../config.js';
-import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
+import {
+  getLastGroupSync,
+  getLatestMessage,
+  setLastGroupSync,
+  storeReaction,
+  updateChatName,
+} from '../db.js';
 import { logger } from '../logger.js';
+import { contentPartsToText, processContentParts } from '../media.js';
 import {
   Channel,
+  ContentPart,
   OnInboundMessage,
   OnChatMetadata,
+  RawContentPart,
   RegisteredGroup,
 } from '../types.js';
-import { registerChannel, ChannelOpts } from './registry.js';
+
+type MediaType = 'image' | 'video' | 'audio' | 'document' | 'sticker';
+
+async function downloadMedia(
+  message: Parameters<typeof downloadContentFromMessage>[0],
+  type: MediaType,
+): Promise<Buffer> {
+  const stream = await downloadContentFromMessage(message, type);
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(
+      typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer),
+    );
+  }
+  return Buffer.concat(chunks);
+}
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -173,74 +197,213 @@ export class WhatsAppChannel implements Channel {
 
     this.sock.ev.on('messages.upsert', async ({ messages }) => {
       for (const msg of messages) {
-        try {
-          if (!msg.message) continue;
-          // Unwrap container types (viewOnceMessageV2, ephemeralMessage,
-          // editedMessage, etc.) so that conversation, extendedTextMessage,
-          // imageMessage, etc. are accessible at the top level.
-          const normalized = normalizeMessageContent(msg.message);
-          if (!normalized) continue;
-          const rawJid = msg.key.remoteJid;
-          if (!rawJid || rawJid === 'status@broadcast') continue;
+        if (!msg.message) continue;
+        const rawJid = msg.key.remoteJid;
+        if (!rawJid || rawJid === 'status@broadcast') continue;
 
-          // Translate LID JID to phone JID if applicable
-          const chatJid = await this.translateJid(rawJid);
+        // Translate LID JID to phone JID if applicable
+        const chatJid = await this.translateJid(rawJid);
 
-          const timestamp = new Date(
-            Number(msg.messageTimestamp) * 1000,
-          ).toISOString();
+        const timestamp = new Date(
+          Number(msg.messageTimestamp) * 1000,
+        ).toISOString();
 
-          // Always notify about chat metadata for group discovery
-          const isGroup = chatJid.endsWith('@g.us');
-          this.opts.onChatMetadata(
-            chatJid,
-            timestamp,
-            undefined,
-            'whatsapp',
-            isGroup,
-          );
+        // Always notify about chat metadata for group discovery
+        const isGroup = chatJid.endsWith('@g.us');
+        this.opts.onChatMetadata(
+          chatJid,
+          timestamp,
+          undefined,
+          'whatsapp',
+          isGroup,
+        );
 
-          // Only deliver full message for registered groups
-          const groups = this.opts.registeredGroups();
-          if (groups[chatJid]) {
-            const content =
-              normalized.conversation ||
-              normalized.extendedTextMessage?.text ||
-              normalized.imageMessage?.caption ||
-              normalized.videoMessage?.caption ||
-              '';
+        // Only deliver full message for registered groups
+        const groups = this.opts.registeredGroups();
+        if (!groups[chatJid]) continue;
 
-            // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
-            if (!content) continue;
+        const m = msg.message;
+        const sender = msg.key.participant || msg.key.remoteJid || '';
+        const senderName = msg.pushName || sender.split('@')[0];
+        const fromMe = msg.key.fromMe || false;
 
-            const sender = msg.key.participant || msg.key.remoteJid || '';
-            const senderName = msg.pushName || sender.split('@')[0];
+        const rawParts: RawContentPart[] = [];
+        let hasMedia = false;
+        let textFallback = '';
 
-            const fromMe = msg.key.fromMe || false;
-            // Detect bot messages: with own number, fromMe is reliable
-            // since only the bot sends from that number.
-            // With shared number, bot messages carry the assistant name prefix
-            // (even in DMs/self-chat) so we check for that.
-            const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
-              ? fromMe
-              : content.startsWith(`${ASSISTANT_NAME}:`);
-
-            this.opts.onMessage(chatJid, {
-              id: msg.key.id || '',
-              chat_jid: chatJid,
-              sender,
-              sender_name: senderName,
-              content,
-              timestamp,
-              is_from_me: fromMe,
-              is_bot_message: isBotMessage,
-            });
+        if (m.conversation) {
+          textFallback = m.conversation;
+          rawParts.push({ type: 'text', text: m.conversation });
+        } else if (m.extendedTextMessage?.text) {
+          textFallback = m.extendedTextMessage.text;
+          rawParts.push({ type: 'text', text: m.extendedTextMessage.text });
+        } else if (m.imageMessage) {
+          hasMedia = true;
+          if (m.imageMessage.caption) {
+            textFallback = m.imageMessage.caption;
+            rawParts.push({ type: 'text', text: m.imageMessage.caption });
           }
-        } catch (err) {
-          logger.error(
-            { err, remoteJid: msg.key?.remoteJid },
-            'Error processing incoming message',
+          try {
+            const buffer = await downloadMedia(m.imageMessage, 'image');
+            rawParts.push({
+              type: 'image',
+              buffer,
+              mimetype: m.imageMessage.mimetype || undefined,
+            });
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to download image');
+          }
+        } else if (m.videoMessage) {
+          hasMedia = true;
+          if (m.videoMessage.caption) {
+            textFallback = m.videoMessage.caption;
+            rawParts.push({ type: 'text', text: m.videoMessage.caption });
+          }
+          try {
+            const buffer = await downloadMedia(m.videoMessage, 'video');
+            rawParts.push({
+              type: 'video',
+              buffer,
+              mimetype: m.videoMessage.mimetype || undefined,
+            });
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to download video');
+          }
+        } else if (m.audioMessage) {
+          hasMedia = true;
+          try {
+            const buffer = await downloadMedia(m.audioMessage, 'audio');
+            const partType = m.audioMessage.ptt ? 'voice' : 'audio';
+            rawParts.push({
+              type: partType,
+              buffer,
+              mimetype: m.audioMessage.mimetype || undefined,
+            } as RawContentPart);
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to download audio');
+          }
+        } else if (m.documentMessage) {
+          hasMedia = true;
+          if (m.documentMessage.caption) {
+            textFallback = m.documentMessage.caption;
+            rawParts.push({ type: 'text', text: m.documentMessage.caption });
+          }
+          try {
+            const buffer = await downloadMedia(m.documentMessage, 'document');
+            rawParts.push({
+              type: 'file',
+              buffer,
+              filename: m.documentMessage.fileName || 'document',
+              mimetype: m.documentMessage.mimetype || undefined,
+            });
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to download document');
+          }
+        } else if (m.stickerMessage) {
+          hasMedia = true;
+          try {
+            const buffer = await downloadMedia(m.stickerMessage, 'sticker');
+            rawParts.push({
+              type: 'sticker',
+              buffer,
+              mimetype: m.stickerMessage.mimetype || undefined,
+            });
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to download sticker');
+          }
+        } else if (m.contactMessage) {
+          hasMedia = true;
+          rawParts.push({
+            type: 'contact',
+            data: {
+              displayName: m.contactMessage.displayName || '',
+              vcard: m.contactMessage.vcard || '',
+            },
+          });
+        } else if (m.locationMessage) {
+          hasMedia = true;
+          rawParts.push({
+            type: 'location',
+            lat: m.locationMessage.degreesLatitude || 0,
+            lng: m.locationMessage.degreesLongitude || 0,
+            name: m.locationMessage.name || undefined,
+          });
+        }
+
+        if (rawParts.length === 0) continue;
+
+        let contentParts: ContentPart[] | undefined;
+        if (hasMedia) {
+          try {
+            contentParts = await processContentParts(
+              rawParts,
+              groups[chatJid].folder,
+              msg.key.id || '',
+            );
+          } catch (err) {
+            logger.warn({ err, chatJid }, 'Failed to process content parts');
+          }
+        }
+
+        const content =
+          textFallback ||
+          (contentParts ? contentPartsToText(contentParts) : '');
+        if (!content) continue;
+
+        const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
+          ? fromMe
+          : content.startsWith(`${ASSISTANT_NAME}:`);
+
+        this.opts.onMessage(chatJid, {
+          id: msg.key.id || '',
+          chat_jid: chatJid,
+          sender,
+          sender_name: senderName,
+          content,
+          content_parts: contentParts,
+          timestamp,
+          is_from_me: fromMe,
+          is_bot_message: isBotMessage,
+        });
+      }
+    });
+
+    // Listen for message reactions
+    this.sock.ev.on('messages.reaction', async (reactions) => {
+      for (const { key, reaction } of reactions) {
+        try {
+          const messageId = key.id;
+          if (!messageId) continue;
+          const rawChatJid = key.remoteJid;
+          if (!rawChatJid || rawChatJid === 'status@broadcast') continue;
+          const chatJid = await this.translateJid(rawChatJid);
+          const groups = this.opts.registeredGroups();
+          if (!groups[chatJid]) continue;
+          const reactorJid =
+            reaction.key?.participant || reaction.key?.remoteJid || '';
+          const emoji = reaction.text || '';
+          const timestamp = reaction.senderTimestampMs
+            ? new Date(Number(reaction.senderTimestampMs)).toISOString()
+            : new Date().toISOString();
+          storeReaction({
+            message_id: messageId,
+            message_chat_jid: chatJid,
+            reactor_jid: reactorJid,
+            reactor_name: reactorJid.split('@')[0],
+            emoji,
+            timestamp,
+          });
+          logger.info(
+            {
+              chatJid,
+              messageId: messageId.slice(0, 10) + '...',
+              reactor: reactorJid.split('@')[0],
+              emoji: emoji || '(removed)',
+            },
+            emoji ? 'Reaction added' : 'Reaction removed',
           );
+        } catch (err) {
+          logger.error({ err }, 'Failed to process reaction');
         }
       }
     });
@@ -276,6 +439,51 @@ export class WhatsAppChannel implements Channel {
     }
   }
 
+  async sendReaction(
+    chatJid: string,
+    messageKey: {
+      id: string;
+      remoteJid: string;
+      fromMe?: boolean;
+      participant?: string;
+    },
+    emoji: string,
+  ): Promise<void> {
+    if (!this.connected) {
+      logger.warn({ chatJid, emoji }, 'Cannot send reaction - not connected');
+      throw new Error('Not connected to WhatsApp');
+    }
+    try {
+      await this.sock.sendMessage(chatJid, {
+        react: { text: emoji, key: messageKey },
+      });
+      logger.info(
+        {
+          chatJid,
+          messageId: messageKey.id?.slice(0, 10) + '...',
+          emoji: emoji || '(removed)',
+        },
+        emoji ? 'Reaction sent' : 'Reaction removed',
+      );
+    } catch (err) {
+      logger.error({ chatJid, emoji, err }, 'Failed to send reaction');
+      throw err;
+    }
+  }
+
+  async reactToLatestMessage(chatJid: string, emoji: string): Promise<void> {
+    const latest = getLatestMessage(chatJid);
+    if (!latest) {
+      throw new Error(`No messages found for chat ${chatJid}`);
+    }
+    const messageKey = {
+      id: latest.id,
+      remoteJid: chatJid,
+      fromMe: latest.fromMe,
+    };
+    await this.sendReaction(chatJid, messageKey, emoji);
+  }
+
   isConnected(): boolean {
     return this.connected;
   }
@@ -297,10 +505,6 @@ export class WhatsAppChannel implements Channel {
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to update typing status');
     }
-  }
-
-  async syncGroups(force: boolean): Promise<void> {
-    return this.syncGroupMetadata(force);
   }
 
   /**
@@ -394,5 +598,3 @@ export class WhatsAppChannel implements Channel {
     }
   }
 }
-
-registerChannel('whatsapp', (opts: ChannelOpts) => new WhatsAppChannel(opts));
