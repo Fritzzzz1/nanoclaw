@@ -513,7 +513,11 @@ async function startMessageLoop(): Promise<void> {
             allPending.length > 0 ? allPending : groupMessages;
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
-          if (queue.sendMessage(chatJid, formatted)) {
+          const mediaParts = messagesToSend.flatMap(
+            (m) => m.content_parts?.filter((p) => p.type !== 'text') ?? [],
+          );
+
+          if (queue.sendMessage(chatJid, formatted, mediaParts.length ? mediaParts : undefined)) {
             logger.debug(
               { chatJid, count: messagesToSend.length },
               'Piped messages to active container',

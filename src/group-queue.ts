@@ -4,6 +4,7 @@ import path from 'path';
 
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { logger } from './logger.js';
+import { ContentPart } from './types.js';
 
 interface QueuedTask {
   id: string;
@@ -157,7 +158,7 @@ export class GroupQueue {
    * Send a follow-up message to the active container via IPC file.
    * Returns true if the message was written, false if no active container.
    */
-  sendMessage(groupJid: string, text: string): boolean {
+  sendMessage(groupJid: string, text: string, contentParts?: ContentPart[]): boolean {
     const state = this.getGroup(groupJid);
     if (!state.active || !state.groupFolder || state.isTaskContainer)
       return false;
@@ -169,7 +170,9 @@ export class GroupQueue {
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
       const filepath = path.join(inputDir, filename);
       const tempPath = `${filepath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
+      const payload: Record<string, unknown> = { type: 'message', text };
+      if (contentParts?.length) payload.content_parts = contentParts;
+      fs.writeFileSync(tempPath, JSON.stringify(payload));
       fs.renameSync(tempPath, filepath);
       return true;
     } catch {

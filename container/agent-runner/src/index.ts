@@ -5,7 +5,7 @@
  * Input protocol:
  *   Stdin: Full ContainerInput JSON (read until EOF, like before)
  *   IPC:   Follow-up messages written as JSON files to /workspace/ipc/input/
- *          Files: {type:"message", text:"..."}.json — polled and consumed
+ *          Files: {type:"message", text:"...", content_parts?:[...]}.json
  *          Sentinel: /workspace/ipc/input/_close — signals session end
  *
  * Stdout protocol:
@@ -54,6 +54,11 @@ interface SessionsIndex {
 }
 
 type MessageContent = string | any[];
+
+interface IpcMessage {
+  text: string;
+  contentParts?: ContentPart[];
+}
 
 interface SDKUserMessage {
   type: 'user';
@@ -129,7 +134,7 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
-import { processMediaTags, cleanupMedia } from './handlers/dispatch.js';
+import { buildMessageContent, cleanupMedia, ContentPart } from './handlers/index.js';
 
 function getSessionSummary(
   sessionId: string,
@@ -310,9 +315,9 @@ function shouldClose(): boolean {
 
 /**
  * Drain all pending IPC input messages.
- * Returns messages found, or empty array.
+ * Returns structured messages with optional content_parts.
  */
-function drainIpcInput(): string[] {
+function drainIpcInput(): IpcMessage[] {
   try {
     fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
     const files = fs
@@ -320,14 +325,17 @@ function drainIpcInput(): string[] {
       .filter((f) => f.endsWith('.json'))
       .sort();
 
-    const messages: string[] = [];
+    const messages: IpcMessage[] = [];
     for (const file of files) {
       const filePath = path.join(IPC_INPUT_DIR, file);
       try {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
         fs.unlinkSync(filePath);
         if (data.type === 'message' && data.text) {
-          messages.push(data.text);
+          messages.push({
+            text: data.text,
+            contentParts: data.content_parts,
+          });
         }
       } catch (err) {
         log(
@@ -349,9 +357,9 @@ function drainIpcInput(): string[] {
 
 /**
  * Wait for a new IPC message or _close sentinel.
- * Returns the messages as a single string, or null if _close.
+ * Returns structured message data, or null if _close.
  */
-function waitForIpcMessage(): Promise<string | null> {
+function waitForIpcMessage(): Promise<IpcMessage | null> {
   return new Promise((resolve) => {
     const poll = () => {
       if (shouldClose()) {
@@ -360,7 +368,9 @@ function waitForIpcMessage(): Promise<string | null> {
       }
       const messages = drainIpcInput();
       if (messages.length > 0) {
-        resolve(messages.join('\n'));
+        const text = messages.map(m => m.text).join('\n');
+        const allParts = messages.flatMap(m => m.contentParts ?? []);
+        resolve({ text, contentParts: allParts.length ? allParts : undefined });
         return;
       }
       setTimeout(poll, IPC_POLL_MS);
@@ -403,9 +413,9 @@ async function runQuery(
       return;
     }
     const messages = drainIpcInput();
-    for (const text of messages) {
-      log(`Piping IPC message into active query (${text.length} chars)`);
-      processMediaTags(text).then((content) => stream.push(content));
+    for (const msg of messages) {
+      log(`Piping IPC message into active query (${msg.text.length} chars)`);
+      buildMessageContent(msg.text, msg.contentParts).then((content) => stream.push(content));
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
@@ -642,19 +652,25 @@ async function main(): Promise<void> {
     /* ignore */
   }
 
+  // TODO: Evaluate whether to support media in the first message that spawns
+  // a container (ContainerInput.prompt). Currently media only flows via IPC
+  // content_parts on follow-up messages.
+
   // Build initial prompt (drain any pending IPC messages too)
   let promptText = containerInput.prompt;
   if (containerInput.isScheduledTask) {
     promptText = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${promptText}`;
   }
   const pending = drainIpcInput();
+  let pendingContentParts: ContentPart[] | undefined;
   if (pending.length > 0) {
     log(`Draining ${pending.length} pending IPC messages into initial prompt`);
-    promptText += '\n' + pending.join('\n');
+    promptText += '\n' + pending.map(m => m.text).join('\n');
+    const allParts = pending.flatMap(m => m.contentParts ?? []);
+    if (allParts.length) pendingContentParts = allParts;
   }
 
-  // Handler dispatch: process <media> tags in prompt through skill overrides + built-in defaults
-  let prompt: MessageContent = await processMediaTags(promptText);
+  let prompt: MessageContent = await buildMessageContent(promptText, pendingContentParts);
 
   // Script phase: run script before waking agent
   if (containerInput.script && containerInput.isScheduledTask) {
@@ -722,8 +738,8 @@ async function main(): Promise<void> {
         break;
       }
 
-      log(`Got new message (${nextMessage.length} chars), starting new query`);
-      prompt = await processMediaTags(nextMessage);
+      log(`Got new message (${nextMessage.text.length} chars), starting new query`);
+      prompt = await buildMessageContent(nextMessage.text, nextMessage.contentParts);
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

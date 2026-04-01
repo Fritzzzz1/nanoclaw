@@ -11,30 +11,20 @@ export function escapeXml(s: string): string {
 }
 
 function formatContentParts(parts: ContentPart[]): string {
+  // Media parts are delivered via structured content_parts on IPC.
+  // Only text-bearing parts are inlined in the XML envelope.
   return parts
     .map((part) => {
-      const p = (v: string) => `/workspace/group/${escapeXml(v)}`;
       switch (part.type) {
         case 'text':
-          return escapeXml(part.text);
-        case 'image':
-          return `<media type="image" path="${p(part.path)}" />`;
-        case 'voice':
-          return `<media type="voice" path="${p(part.path)}" />`;
-        case 'video':
-          return `<media type="video" path="${p(part.path)}" />`;
-        case 'audio':
-          return `<media type="audio" path="${p(part.path)}" />`;
-        case 'file':
-          return `<media type="file" path="${p(part.path)}" filename="${escapeXml(part.filename)}" />`;
-        case 'sticker':
-          return `<media type="sticker" path="${p(part.path)}" />`;
         case 'contact':
-          return escapeXml(part.text);
         case 'location':
           return escapeXml(part.text);
+        default:
+          return null;
       }
     })
+    .filter(Boolean)
     .join('\n');
 }
 

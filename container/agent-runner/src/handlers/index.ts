@@ -31,7 +31,7 @@ const MEDIA_DIR = '/workspace/group/media';
 const MEDIA_TTL_MS = 60 * 60 * 1000; // 1 hour
 const MEDIA_MAX_BYTES = 500 * 1024 * 1024; // 500 MB
 
-interface ContentPart {
+export interface ContentPart {
   type: string;
   path?: string;
   text?: string;
@@ -89,42 +89,18 @@ async function dispatchContentPart(part: ContentPart): Promise<ContentBlock[]> {
 }
 
 /**
- * Parse <media> tags in a prompt string and dispatch each to its handler.
+ * Build message content from text and optional structured content parts.
+ * Dispatches each media part through its handler and combines with text.
  */
-export async function processMediaTags(text: string): Promise<MessageContent> {
-  const mediaRegex =
-    /<media\s+type="([^"]+)"\s+path="([^"]+)"(?:\s+filename="([^"]+)")?\s*\/>/g;
-  const matches = [...text.matchAll(mediaRegex)];
-
-  if (matches.length === 0) return text;
+export async function buildMessageContent(text: string, contentParts?: ContentPart[]): Promise<MessageContent> {
+  if (!contentParts?.length) return text;
 
   const blocks: ContentBlock[] = [];
-  let lastIndex = 0;
+  if (text.trim()) blocks.push({ type: 'text', text: text.trim() });
 
-  for (const match of matches) {
-    const [fullMatch, type, filePath, filename] = match;
-    const offset = match.index!;
-
-    if (offset > lastIndex) {
-      const before = text.slice(lastIndex, offset).trim();
-      if (before) blocks.push({ type: 'text', text: before });
-    }
-
-    const part: ContentPart = {
-      type,
-      path: filePath.replace('/workspace/group/', ''),
-    };
-    if (filename) part.filename = filename;
-
+  for (const part of contentParts) {
     const dispatched = await dispatchContentPart(part);
     blocks.push(...dispatched);
-
-    lastIndex = offset + fullMatch.length;
-  }
-
-  if (lastIndex < text.length) {
-    const after = text.slice(lastIndex).trim();
-    if (after) blocks.push({ type: 'text', text: after });
   }
 
   return blocks.length === 1 && blocks[0].type === 'text'
