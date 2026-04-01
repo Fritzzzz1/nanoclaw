@@ -54,15 +54,6 @@ export interface NewMessage {
   is_bot_message?: boolean;
 }
 
-export interface Reaction {
-  message_id: string;
-  message_chat_jid: string;
-  reactor_jid: string;
-  reactor_name: string | null;
-  emoji: string;
-  timestamp: string;
-}
-
 /**
  *  Media parts accept either:
  *    ref    — URL or file ID; processContentParts() downloads it (Telegram, Discord, etc.)
