@@ -22,7 +22,11 @@ export async function handleImage(filePath: string): Promise<any[] | null> {
   return [
     {
       type: 'image',
-      source: { type: 'base64', media_type: MIME[ext] || 'application/octet-stream', data },
+      source: {
+        type: 'base64',
+        media_type: MIME[ext] || 'application/octet-stream',
+        data,
+      },
     },
   ];
 }

@@ -158,7 +158,11 @@ export class GroupQueue {
    * Send a follow-up message to the active container via IPC file.
    * Returns true if the message was written, false if no active container.
    */
-  sendMessage(groupJid: string, text: string, contentParts?: ContentPart[]): boolean {
+  sendMessage(
+    groupJid: string,
+    text: string,
+    contentParts?: ContentPart[],
+  ): boolean {
     const state = this.getGroup(groupJid);
     if (!state.active || !state.groupFolder || state.isTaskContainer)
       return false;

@@ -20,10 +20,14 @@ export async function extractPdf(filePath: string): Promise<any[] | null> {
   try {
     let pages: number | null = null;
     try {
-      const info = execSync(`pdfinfo "${filePath}" 2>/dev/null`, { encoding: 'utf-8' });
+      const info = execSync(`pdfinfo "${filePath}" 2>/dev/null`, {
+        encoding: 'utf-8',
+      });
       const match = info.match(/Pages:\s+(\d+)/);
       pages = match ? parseInt(match[1]) : null;
-    } catch { /* pdfinfo optional */ }
+    } catch {
+      /* pdfinfo optional */
+    }
 
     const text = execSync(`pdftotext -layout "${filePath}" -`, {
       encoding: 'utf-8',

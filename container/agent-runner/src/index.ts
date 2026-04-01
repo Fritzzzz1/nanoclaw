@@ -134,7 +134,11 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
-import { buildMessageContent, cleanupMedia, ContentPart } from './handlers/index.js';
+import {
+  buildMessageContent,
+  cleanupMedia,
+  ContentPart,
+} from './handlers/index.js';
 
 function getSessionSummary(
   sessionId: string,
@@ -368,8 +372,8 @@ function waitForIpcMessage(): Promise<IpcMessage | null> {
       }
       const messages = drainIpcInput();
       if (messages.length > 0) {
-        const text = messages.map(m => m.text).join('\n');
-        const allParts = messages.flatMap(m => m.contentParts ?? []);
+        const text = messages.map((m) => m.text).join('\n');
+        const allParts = messages.flatMap((m) => m.contentParts ?? []);
         resolve({ text, contentParts: allParts.length ? allParts : undefined });
         return;
       }
@@ -415,7 +419,9 @@ async function runQuery(
     const messages = drainIpcInput();
     for (const msg of messages) {
       log(`Piping IPC message into active query (${msg.text.length} chars)`);
-      buildMessageContent(msg.text, msg.contentParts).then((content) => stream.push(content));
+      buildMessageContent(msg.text, msg.contentParts).then((content) =>
+        stream.push(content),
+      );
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
@@ -665,12 +671,15 @@ async function main(): Promise<void> {
   let pendingContentParts: ContentPart[] | undefined;
   if (pending.length > 0) {
     log(`Draining ${pending.length} pending IPC messages into initial prompt`);
-    promptText += '\n' + pending.map(m => m.text).join('\n');
-    const allParts = pending.flatMap(m => m.contentParts ?? []);
+    promptText += '\n' + pending.map((m) => m.text).join('\n');
+    const allParts = pending.flatMap((m) => m.contentParts ?? []);
     if (allParts.length) pendingContentParts = allParts;
   }
 
-  let prompt: MessageContent = await buildMessageContent(promptText, pendingContentParts);
+  let prompt: MessageContent = await buildMessageContent(
+    promptText,
+    pendingContentParts,
+  );
 
   // Script phase: run script before waking agent
   if (containerInput.script && containerInput.isScheduledTask) {
@@ -738,8 +747,13 @@ async function main(): Promise<void> {
         break;
       }
 
-      log(`Got new message (${nextMessage.text.length} chars), starting new query`);
-      prompt = await buildMessageContent(nextMessage.text, nextMessage.contentParts);
+      log(
+        `Got new message (${nextMessage.text.length} chars), starting new query`,
+      );
+      prompt = await buildMessageContent(
+        nextMessage.text,
+        nextMessage.contentParts,
+      );
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

@@ -75,13 +75,17 @@ async function dispatchContentPart(part: ContentPart): Promise<ContentBlock[]> {
 
     if (result?.length) return result;
   } catch (err) {
-    log(`Handler for ${part.type} failed: ${err instanceof Error ? err.message : String(err)}`);
+    log(
+      `Handler for ${part.type} failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   // Fallback: text note for unhandled or failed types
   if (fs.existsSync(fullPath)) {
     const label = part.type.charAt(0).toUpperCase() + part.type.slice(1);
-    return [{ type: 'text', text: `User sent ${label} file. Stored at ${fullPath}.` }];
+    return [
+      { type: 'text', text: `User sent ${label} file. Stored at ${fullPath}.` },
+    ];
   }
 
   log(`Media file not found: ${fullPath}`);
@@ -92,7 +96,10 @@ async function dispatchContentPart(part: ContentPart): Promise<ContentBlock[]> {
  * Build message content from text and optional structured content parts.
  * Dispatches each media part through its handler and combines with text.
  */
-export async function buildMessageContent(text: string, contentParts?: ContentPart[]): Promise<MessageContent> {
+export async function buildMessageContent(
+  text: string,
+  contentParts?: ContentPart[],
+): Promise<MessageContent> {
   if (!contentParts?.length) return text;
 
   const blocks: ContentBlock[] = [];
