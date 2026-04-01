@@ -1,7 +1,11 @@
 /**
- * Default sticker handler — no native Claude support yet.
- * Returns null to let the default fallback handle it.
+ * Default sticker handler — embeds as image if Claude-native format.
+ * Returns null for unsupported formats (e.g. animated .tgs).
  */
-export async function handleSticker(_filePath: string): Promise<any[] | null> {
-  return null;
+import { handleImage } from './image.js';
+
+export async function handleSticker(
+  filePath: string,
+): Promise<any[] | null> {
+  return handleImage(filePath);
 }
