@@ -1,12 +1,12 @@
 /**
- * Voice/audio transcription handler — OpenAI Whisper API.
- * Priority 50 (fallback after local whisper). Falls through if no API key.
+ * Voice/audio transcription — OpenAI Whisper API.
+ * Returns null if no API key or transcription fails (falls through to default).
  */
 import fs from 'fs';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-async function handler(filePath) {
+export async function transcribe(filePath: string): Promise<any[] | null> {
   if (!OPENAI_API_KEY) return null;
   if (!fs.existsSync(filePath)) return null;
 
@@ -33,8 +33,3 @@ async function handler(filePath) {
     return null;
   }
 }
-
-export default [
-  { type: 'voice', priority: 50, handler },
-  { type: 'audio', priority: 50, handler },
-];

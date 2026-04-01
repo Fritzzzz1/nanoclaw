@@ -17,11 +17,7 @@ import {
   ASSISTANT_NAME,
   STORE_DIR,
 } from '../config.js';
-import {
-  getLastGroupSync,
-  setLastGroupSync,
-  updateChatName,
-} from '../db.js';
+import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
 import { logger } from '../logger.js';
 import { contentPartsToText, processContentParts } from '../media.js';
 import {
@@ -365,7 +361,6 @@ export class WhatsAppChannel implements Channel {
         });
       }
     });
-
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
