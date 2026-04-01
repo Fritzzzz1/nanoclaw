@@ -118,34 +118,15 @@ export async function processContentParts(
       continue;
     }
 
-    switch (part.type) {
-      case 'text':
-        result.push({ type: 'text', text: part.text });
-        break;
-      case 'file': {
-        const buf = await resolveBuffer(part);
-        if (!buf) {
-          logger.warn({ messageId }, 'Skipping file — no data');
-          break;
-        }
-        const e = path.extname(part.filename) || ext(part.mimetype);
-        const p = saveFile(mediaDir, buf, e, messageId);
-        result.push({ type: 'file', path: p, filename: part.filename });
-        break;
+    if (part.type === 'file') {
+      const buf = await resolveBuffer(part);
+      if (!buf) {
+        logger.warn({ messageId }, 'Skipping file — no data');
+        continue;
       }
-      case 'contact': {
-        const name = (part.data.displayName as string) || 'Unknown';
-        const vcard = (part.data.vcard as string) || '';
-        const text = `[Contact: ${name}${vcard ? `\n${vcard}` : ''}]`;
-        result.push({ type: 'contact', text });
-        break;
-      }
-      case 'location': {
-        const label = part.name ? ` (${part.name})` : '';
-        const text = `[Location: ${part.lat}, ${part.lng}${label}]`;
-        result.push({ type: 'location', text });
-        break;
-      }
+      const e = path.extname(part.filename) || ext(part.mimetype);
+      const p = saveFile(mediaDir, buf, e, messageId);
+      result.push({ type: 'file', path: p, filename: part.filename });
     }
   }
 
@@ -156,8 +137,6 @@ export function contentPartsToText(parts: ContentPart[]): string {
   return parts
     .map((part) => {
       switch (part.type) {
-        case 'text':
-          return part.text;
         case 'image':
           return `[Image: ${part.path}]`;
         case 'voice':
@@ -170,10 +149,6 @@ export function contentPartsToText(parts: ContentPart[]): string {
           return `[File "${part.filename}": ${part.path}]`;
         case 'sticker':
           return `[Sticker: ${part.path}]`;
-        case 'contact':
-          return part.text;
-        case 'location':
-          return part.text;
       }
     })
     .join('\n');

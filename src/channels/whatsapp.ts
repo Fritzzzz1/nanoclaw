@@ -227,15 +227,12 @@ export class WhatsAppChannel implements Channel {
 
         if (m.conversation) {
           textFallback = m.conversation;
-          rawParts.push({ type: 'text', text: m.conversation });
         } else if (m.extendedTextMessage?.text) {
           textFallback = m.extendedTextMessage.text;
-          rawParts.push({ type: 'text', text: m.extendedTextMessage.text });
         } else if (m.imageMessage) {
           hasMedia = true;
           if (m.imageMessage.caption) {
             textFallback = m.imageMessage.caption;
-            rawParts.push({ type: 'text', text: m.imageMessage.caption });
           }
           try {
             const buffer = await downloadMedia(m.imageMessage, 'image');
@@ -251,7 +248,6 @@ export class WhatsAppChannel implements Channel {
           hasMedia = true;
           if (m.videoMessage.caption) {
             textFallback = m.videoMessage.caption;
-            rawParts.push({ type: 'text', text: m.videoMessage.caption });
           }
           try {
             const buffer = await downloadMedia(m.videoMessage, 'video');
@@ -280,7 +276,6 @@ export class WhatsAppChannel implements Channel {
           hasMedia = true;
           if (m.documentMessage.caption) {
             textFallback = m.documentMessage.caption;
-            rawParts.push({ type: 'text', text: m.documentMessage.caption });
           }
           try {
             const buffer = await downloadMedia(m.documentMessage, 'document');
@@ -306,25 +301,17 @@ export class WhatsAppChannel implements Channel {
             logger.warn({ err, chatJid }, 'Failed to download sticker');
           }
         } else if (m.contactMessage) {
-          hasMedia = true;
-          rawParts.push({
-            type: 'contact',
-            data: {
-              displayName: m.contactMessage.displayName || '',
-              vcard: m.contactMessage.vcard || '',
-            },
-          });
+          const name = m.contactMessage.displayName || 'Unknown';
+          const vcard = m.contactMessage.vcard || '';
+          textFallback = `[Contact: ${name}${vcard ? `\n${vcard}` : ''}]`;
         } else if (m.locationMessage) {
-          hasMedia = true;
-          rawParts.push({
-            type: 'location',
-            lat: m.locationMessage.degreesLatitude || 0,
-            lng: m.locationMessage.degreesLongitude || 0,
-            name: m.locationMessage.name || undefined,
-          });
+          const lat = m.locationMessage.degreesLatitude || 0;
+          const lng = m.locationMessage.degreesLongitude || 0;
+          const name = m.locationMessage.name;
+          textFallback = `[Location: ${lat}, ${lng}${name ? ` (${name})` : ''}]`;
         }
 
-        if (rawParts.length === 0) continue;
+        if (rawParts.length === 0 && !textFallback) continue;
 
         let contentParts: ContentPart[] | undefined;
         if (hasMedia) {

@@ -61,7 +61,6 @@ export interface NewMessage {
  */
 
 export type RawContentPart =
-  | { type: 'text'; text: string }
   | { type: 'image'; ref?: string; buffer?: Buffer; mimetype?: string }
   | { type: 'voice'; ref?: string; buffer?: Buffer; mimetype?: string }
   | { type: 'video'; ref?: string; buffer?: Buffer; mimetype?: string }
@@ -73,20 +72,15 @@ export type RawContentPart =
       filename: string;
       mimetype?: string;
     }
-  | { type: 'sticker'; ref?: string; buffer?: Buffer; mimetype?: string }
-  | { type: 'contact'; data: Record<string, unknown> }
-  | { type: 'location'; lat: number; lng: number; name?: string };
+  | { type: 'sticker'; ref?: string; buffer?: Buffer; mimetype?: string };
 
 export type ContentPart =
-  | { type: 'text'; text: string }
   | { type: 'image'; path: string }
   | { type: 'voice'; path: string }
   | { type: 'video'; path: string }
   | { type: 'audio'; path: string }
   | { type: 'file'; path: string; filename: string }
-  | { type: 'sticker'; path: string }
-  | { type: 'contact'; text: string }
-  | { type: 'location'; text: string };
+  | { type: 'sticker'; path: string };
 
 export interface ScheduledTask {
   id: string;

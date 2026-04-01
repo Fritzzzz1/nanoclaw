@@ -1,4 +1,4 @@
-import { Channel, ContentPart, NewMessage } from './types.js';
+import { Channel, NewMessage } from './types.js';
 import { formatLocalTime } from './timezone.js';
 
 export function escapeXml(s: string): string {
@@ -10,33 +10,13 @@ export function escapeXml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-function formatContentParts(parts: ContentPart[]): string {
-  // Media parts are delivered via structured content_parts on IPC.
-  // Only text-bearing parts are inlined in the XML envelope.
-  return parts
-    .map((part) => {
-      switch (part.type) {
-        case 'text':
-        case 'contact':
-        case 'location':
-          return escapeXml(part.text);
-        default:
-          return null;
-      }
-    })
-    .filter(Boolean)
-    .join('\n');
-}
-
 export function formatMessages(
   messages: NewMessage[],
   timezone: string,
 ): string {
   const lines = messages.map((m) => {
     const displayTime = formatLocalTime(m.timestamp, timezone);
-    const body = m.content_parts
-      ? formatContentParts(m.content_parts)
-      : escapeXml(m.content);
+    const body = escapeXml(m.content);
     return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}">${body}</message>`;
   });
 

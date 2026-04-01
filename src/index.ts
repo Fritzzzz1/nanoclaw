@@ -514,7 +514,7 @@ async function startMessageLoop(): Promise<void> {
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
           const mediaParts = messagesToSend.flatMap(
-            (m) => m.content_parts?.filter((p) => p.type !== 'text') ?? [],
+            (m) => m.content_parts ?? [],
           );
 
           if (

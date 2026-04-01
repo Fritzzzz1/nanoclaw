@@ -201,8 +201,6 @@ export class TelegramChannel implements Channel {
       );
 
       const rawParts: RawContentPart[] = [];
-      if (ctx.message.caption)
-        rawParts.push({ type: 'text', text: ctx.message.caption });
 
       try {
         rawParts.push(...(await buildParts()));
@@ -311,32 +309,49 @@ export class TelegramChannel implements Channel {
       }),
     );
 
-    this.bot.on('message:location', (ctx) =>
-      handleMedia(ctx, async () => [
-        {
-          type: 'location',
-          lat: ctx.message.location.latitude,
-          lng: ctx.message.location.longitude,
-        },
-      ]),
-    );
+    this.bot.on('message:location', (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const sender = ctx.from?.id?.toString() || '';
+      const senderName =
+        ctx.from?.first_name || ctx.from?.username || sender || 'Unknown';
+      const lat = ctx.message.location.latitude;
+      const lng = ctx.message.location.longitude;
+      this.opts.onMessage(chatJid, {
+        id: ctx.message.message_id.toString(),
+        chat_jid: chatJid,
+        sender,
+        sender_name: senderName,
+        content: `[Location: ${lat}, ${lng}]`,
+        timestamp,
+        is_from_me: false,
+      });
+    });
 
-    this.bot.on('message:contact', (ctx) =>
-      handleMedia(ctx, async () => [
-        {
-          type: 'contact',
-          data: {
-            displayName: [
-              ctx.message.contact.first_name,
-              ctx.message.contact.last_name,
-            ]
-              .filter(Boolean)
-              .join(' '),
-            vcard: ctx.message.contact.vcard || '',
-          },
-        },
-      ]),
-    );
+    this.bot.on('message:contact', (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const sender = ctx.from?.id?.toString() || '';
+      const senderName =
+        ctx.from?.first_name || ctx.from?.username || sender || 'Unknown';
+      const name = [ctx.message.contact.first_name, ctx.message.contact.last_name]
+        .filter(Boolean)
+        .join(' ');
+      const vcard = ctx.message.contact.vcard || '';
+      this.opts.onMessage(chatJid, {
+        id: ctx.message.message_id.toString(),
+        chat_jid: chatJid,
+        sender,
+        sender_name: senderName,
+        content: `[Contact: ${name}${vcard ? `\n${vcard}` : ''}]`,
+        timestamp,
+        is_from_me: false,
+      });
+    });
 
     this.bot.catch((err) => {
       logger.error({ err: err.message }, 'Telegram bot error');
