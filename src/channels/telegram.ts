@@ -216,9 +216,10 @@ export class TelegramChannel implements Channel {
         logger.warn({ err, chatJid }, 'Failed to process content parts');
       }
 
-      const content =
-        ctx.message.caption ||
-        (contentParts ? contentPartsToText(contentParts) : '');
+      const mediaSummary = contentParts ? contentPartsToText(contentParts) : '';
+      const content = [ctx.message.caption, mediaSummary]
+        .filter(Boolean)
+        .join('\n');
       if (!content) return;
 
       this.opts.onMessage(chatJid, {
