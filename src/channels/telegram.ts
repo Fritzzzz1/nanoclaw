@@ -338,7 +338,10 @@ export class TelegramChannel implements Channel {
       const sender = ctx.from?.id?.toString() || '';
       const senderName =
         ctx.from?.first_name || ctx.from?.username || sender || 'Unknown';
-      const name = [ctx.message.contact.first_name, ctx.message.contact.last_name]
+      const name = [
+        ctx.message.contact.first_name,
+        ctx.message.contact.last_name,
+      ]
         .filter(Boolean)
         .join(' ');
       const vcard = ctx.message.contact.vcard || '';
